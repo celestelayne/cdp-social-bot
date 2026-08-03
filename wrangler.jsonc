@@ -8,7 +8,12 @@
 	"main": "worker/index.ts",
 	"compatibility_date": "2026-08-01",
 	"assets": {
-		"not_found_handling": "single-page-application"
+		"not_found_handling": "single-page-application",
+		"run_worker_first": [
+			"/api/*",
+			"/interactions",
+			"/auth/*"
+		]
 	},
 	"observability": {
 		"enabled": true
@@ -16,6 +21,13 @@
 	"upload_source_maps": true,
 	"compatibility_flags": [
 		"nodejs_compat"
+	],
+	"d1_databases": [
+		{
+			"binding": "cdp_social_bot_db",
+			"database_name": "cdp-social-bot-db",
+			"database_id": "75cd48b7-ce24-42ab-9829-dfc99314c515"
+		}
 	]
 	/**
 	 * Smart Placement
