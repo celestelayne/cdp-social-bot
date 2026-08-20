@@ -201,6 +201,62 @@ async function isValidDiscordSignature(
   }
 }
 
+type PublishedProfileRow = {
+  display_name: string;
+  pronunciation: string | null;
+  favorite_drink: string | null;
+  dietary_notes: string | null;
+  interests: string | null;
+  published: number;
+};
+
+type InteractionOption = {
+  name: string;
+  value?: unknown;
+};
+
+type Interaction = {
+  type?: number;
+  data?: {
+    name?: string;
+    options?: InteractionOption[];
+  };
+};
+
+/**
+ * A plain text reply. `allowed_mentions` is emptied so profile text can never
+ * ping anyone — a student who types "@everyone" into a field would otherwise
+ * notify the whole server every time someone ran /meet.
+ */
+function discordMessage(content: string): Response {
+  return Response.json({
+    type: 4,
+    data: {
+      content,
+      allowed_mentions: { parse: [] },
+    },
+  });
+}
+
+function formatProfile(profile: PublishedProfileRow): string {
+  const lines = [`**${profile.display_name}**`];
+
+  if (profile.pronunciation) {
+    lines.push(`Name pronunciation: ${profile.pronunciation}`);
+  }
+  if (profile.favorite_drink) {
+    lines.push(`Favorite coffee or tea: ${profile.favorite_drink}`);
+  }
+  if (profile.dietary_notes) {
+    lines.push(`Dietary information: ${profile.dietary_notes}`);
+  }
+  if (profile.interests) {
+    lines.push(`Ask me about: ${profile.interests}`);
+  }
+
+  return lines.join("\n");
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -346,10 +402,10 @@ export default {
         return new Response("Invalid request signature", { status: 401 });
       }
 
-      let interaction: { type?: number };
+      let interaction: Interaction;
 
       try {
-        interaction = JSON.parse(rawBody) as { type?: number };
+        interaction = JSON.parse(rawBody) as Interaction;
       } catch {
         return new Response("Invalid JSON body", { status: 400 });
       }
@@ -358,12 +414,37 @@ export default {
         return Response.json({ type: 1 });
       }
 
-      return Response.json({
-        type: 4,
-        data: {
-          content: "Discord interactions are connected.",
-        },
-      });
+      if (interaction.data?.name === "meet") {
+        const studentOption = interaction.data.options?.find(
+          (option) => option.name === "student",
+        );
+
+        const studentId =
+          typeof studentOption?.value === "string" ? studentOption.value : null;
+
+        if (!studentId) {
+          return discordMessage("Choose a classmate to look up.");
+        }
+
+        const profile = await env.cdp_social_bot_db
+          .prepare(
+            "SELECT display_name, pronunciation, favorite_drink, dietary_notes, interests, published FROM profiles WHERE discord_user_id = ?",
+          )
+          .bind(studentId)
+          .first<PublishedProfileRow>();
+
+        if (!profile) {
+          return discordMessage("This student has not created a profile yet.");
+        }
+
+        if (profile.published !== 1) {
+          return discordMessage("This student's profile is not published.");
+        }
+
+        return discordMessage(formatProfile(profile));
+      }
+
+      return discordMessage("Discord interactions are connected.");
     }
 
     if (url.pathname === "/auth/discord" && request.method === "GET") {
