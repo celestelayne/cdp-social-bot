@@ -5,6 +5,36 @@ interface Env {
   DISCORD_PUBLIC_KEY: string;
 }
 
+const SESSION_COOKIE_NAME = "session";
+const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
+
+function readSessionId(request: Request): string | undefined {
+  const prefix = `${SESSION_COOKIE_NAME}=`;
+
+  return (request.headers.get("Cookie") ?? "")
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(prefix))
+    ?.slice(prefix.length);
+}
+
+function buildSessionCookie(
+  value: string,
+  maxAgeSeconds: number,
+  url: URL,
+): string {
+  const parts = [
+    `${SESSION_COOKIE_NAME}=${value}`,
+    "HttpOnly",
+    "SameSite=Lax",
+    "Path=/",
+    `Max-Age=${maxAgeSeconds}`,
+  ];
+  if (url.protocol === "https:") parts.push("Secure");
+
+  return parts.join("; ");
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -17,12 +47,7 @@ export default {
     }
 
     if (url.pathname === "/api/session" && request.method === "GET") {
-      const cookieHeader = request.headers.get("Cookie") ?? "";
-      const sessionId = cookieHeader
-        .split(";")
-        .map((part) => part.trim())
-        .find((part) => part.startsWith("session="))
-        ?.slice("session=".length);
+      const sessionId = readSessionId(request);
 
       if (!sessionId) {
         return Response.json({ authenticated: false });
@@ -51,18 +76,9 @@ export default {
           .bind(sessionId)
           .run();
 
-        const clearedCookieParts = [
-          "session=",
-          "HttpOnly",
-          "SameSite=Lax",
-          "Path=/",
-          "Max-Age=0",
-        ];
-        if (url.protocol === "https:") clearedCookieParts.push("Secure");
-
         return Response.json(
           { authenticated: false },
-          { headers: { "Set-Cookie": clearedCookieParts.join("; ") } },
+          { headers: { "Set-Cookie": buildSessionCookie("", 0, url) } },
         );
       }
 
@@ -189,7 +205,7 @@ export default {
       ).join("");
 
       const sessionExpiresAt = new Date(
-        Date.now() + 30 * 24 * 60 * 60 * 1000,
+        Date.now() + SESSION_MAX_AGE_SECONDS * 1000,
       ).toISOString();
 
       await env.cdp_social_bot_db
@@ -206,22 +222,33 @@ export default {
         )
         .run();
 
-      const cookieParts = [
-        `session=${sessionId}`,
-        "HttpOnly",
-        "SameSite=Lax",
-        "Path=/",
-        "Max-Age=2592000",
-      ];
-      if (url.protocol === "https:") cookieParts.push("Secure");
-
       return new Response(null, {
         status: 302,
         headers: {
           Location: "/",
-          "Set-Cookie": cookieParts.join("; "),
+          "Set-Cookie": buildSessionCookie(
+            sessionId,
+            SESSION_MAX_AGE_SECONDS,
+            url,
+          ),
         },
       });
+    }
+
+    if (url.pathname === "/auth/logout" && request.method === "POST") {
+      const sessionId = readSessionId(request);
+
+      if (sessionId) {
+        await env.cdp_social_bot_db
+          .prepare("DELETE FROM sessions WHERE session_id = ?")
+          .bind(sessionId)
+          .run();
+      }
+
+      return Response.json(
+        { ok: true },
+        { headers: { "Set-Cookie": buildSessionCookie("", 0, url) } },
+      );
     }
 		return new Response(null, { status: 404 });
   },
