@@ -149,6 +149,58 @@ function parseProfileBody(
   };
 }
 
+function hexToBytes(hex: string): Uint8Array | null {
+  if (hex.length === 0 || hex.length % 2 !== 0 || /[^0-9a-fA-F]/.test(hex)) {
+    return null;
+  }
+
+  const bytes = new Uint8Array(hex.length / 2);
+
+  for (let i = 0; i < bytes.length; i += 1) {
+    bytes[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+
+  return bytes;
+}
+
+/**
+ * Discord signs the concatenation of the timestamp header and the raw request
+ * body. The body must be verified exactly as sent — re-serializing parsed JSON
+ * changes the bytes and the signature will not match.
+ */
+async function isValidDiscordSignature(
+  publicKeyHex: string,
+  signatureHex: string,
+  timestamp: string,
+  rawBody: string,
+): Promise<boolean> {
+  const publicKey = hexToBytes(publicKeyHex);
+  const signature = hexToBytes(signatureHex);
+
+  if (!publicKey || !signature) {
+    return false;
+  }
+
+  try {
+    const key = await crypto.subtle.importKey(
+      "raw",
+      publicKey,
+      { name: "Ed25519" },
+      false,
+      ["verify"],
+    );
+
+    return await crypto.subtle.verify(
+      { name: "Ed25519" },
+      key,
+      signature,
+      new TextEncoder().encode(timestamp + rawBody),
+    );
+  } catch {
+    return false;
+  }
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -271,6 +323,47 @@ export default {
         .run();
 
       return Response.json({ ok: true });
+    }
+
+    if (url.pathname === "/interactions" && request.method === "POST") {
+      const signature = request.headers.get("X-Signature-Ed25519");
+      const timestamp = request.headers.get("X-Signature-Timestamp");
+
+      if (!signature || !timestamp) {
+        return new Response("Missing signature headers", { status: 401 });
+      }
+
+      const rawBody = await request.text();
+
+      const isValid = await isValidDiscordSignature(
+        env.DISCORD_PUBLIC_KEY,
+        signature,
+        timestamp,
+        rawBody,
+      );
+
+      if (!isValid) {
+        return new Response("Invalid request signature", { status: 401 });
+      }
+
+      let interaction: { type?: number };
+
+      try {
+        interaction = JSON.parse(rawBody) as { type?: number };
+      } catch {
+        return new Response("Invalid JSON body", { status: 400 });
+      }
+
+      if (interaction.type === 1) {
+        return Response.json({ type: 1 });
+      }
+
+      return Response.json({
+        type: 4,
+        data: {
+          content: "Discord interactions are connected.",
+        },
+      });
     }
 
     if (url.pathname === "/auth/discord" && request.method === "GET") {
