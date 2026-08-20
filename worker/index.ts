@@ -1,3 +1,5 @@
+import { PROFILE_FIELD_LIMITS } from "../shared/profile-limits.ts";
+
 interface Env {
   cdp_social_bot_db: D1Database;
   DISCORD_CLIENT_ID: string;
@@ -81,6 +83,72 @@ async function loadSession(
   return { status: "valid", session };
 }
 
+type ProfileInput = {
+  displayName: string;
+  pronunciation: string | null;
+  favoriteDrink: string | null;
+  dietaryNotes: string | null;
+  interests: string | null;
+  published: number;
+};
+
+function parseProfileBody(
+  body: unknown,
+): { ok: true; profile: ProfileInput } | { ok: false; error: string } {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return { ok: false, error: "Request body must be a JSON object." };
+  }
+
+  const raw = body as Record<string, unknown>;
+  const values: Record<string, string | null> = {};
+
+  for (const [field, limit] of Object.entries(PROFILE_FIELD_LIMITS)) {
+    const value = raw[field];
+
+    if (value === undefined || value === null) {
+      values[field] = null;
+      continue;
+    }
+
+    if (typeof value !== "string") {
+      return { ok: false, error: `${field} must be a string.` };
+    }
+
+    const trimmed = value.trim();
+
+    if (trimmed.length > limit) {
+      return {
+        ok: false,
+        error: `${field} must be ${limit} characters or fewer.`,
+      };
+    }
+
+    values[field] = trimmed === "" ? null : trimmed;
+  }
+
+  if (values.displayName === null) {
+    return { ok: false, error: "displayName is required." };
+  }
+
+  const published = raw.published ?? false;
+
+  if (typeof published !== "boolean") {
+    return { ok: false, error: "published must be true or false." };
+  }
+
+  return {
+    ok: true,
+    profile: {
+      displayName: values.displayName,
+      pronunciation: values.pronunciation,
+      favoriteDrink: values.favoriteDrink,
+      dietaryNotes: values.dietaryNotes,
+      interests: values.interests,
+      published: published ? 1 : 0,
+    },
+  };
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -152,6 +220,57 @@ export default {
           published: profile.published !== 0,
         },
       });
+    }
+
+    if (url.pathname === "/api/profile" && request.method === "POST") {
+      const lookup = await loadSession(request, env);
+
+      if (lookup.status !== "valid") {
+        return Response.json({ error: "Unauthorized" }, { status: 401 });
+      }
+
+      let body: unknown;
+
+      try {
+        body = await request.json();
+      } catch {
+        return Response.json(
+          { error: "Request body must be valid JSON." },
+          { status: 400 },
+        );
+      }
+
+      const parsed = parseProfileBody(body);
+
+      if (!parsed.ok) {
+        return Response.json({ error: parsed.error }, { status: 400 });
+      }
+
+      await env.cdp_social_bot_db
+        .prepare(
+          `INSERT INTO profiles (discord_user_id, display_name, pronunciation, favorite_drink, dietary_notes, interests, published, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(discord_user_id) DO UPDATE SET
+             display_name = excluded.display_name,
+             pronunciation = excluded.pronunciation,
+             favorite_drink = excluded.favorite_drink,
+             dietary_notes = excluded.dietary_notes,
+             interests = excluded.interests,
+             published = excluded.published,
+             updated_at = CURRENT_TIMESTAMP`,
+        )
+        .bind(
+          lookup.session.discord_user_id,
+          parsed.profile.displayName,
+          parsed.profile.pronunciation,
+          parsed.profile.favoriteDrink,
+          parsed.profile.dietaryNotes,
+          parsed.profile.interests,
+          parsed.profile.published,
+        )
+        .run();
+
+      return Response.json({ ok: true });
     }
 
     if (url.pathname === "/auth/discord" && request.method === "GET") {

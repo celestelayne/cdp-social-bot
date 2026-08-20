@@ -1,4 +1,9 @@
 import { type FormEvent, useEffect, useState } from 'react'
+import {
+  CHARACTERS_REMAINING_WARNING,
+  PROFILE_FIELD_LIMITS,
+  type ProfileFieldName,
+} from '../shared/profile-limits.ts'
 import './App.css'
 
 type DiscordUser = {
@@ -26,6 +31,17 @@ type ProfileForm = {
   published: boolean
 }
 
+type ProfileResponse = {
+  profile: {
+    displayName: string
+    pronunciation: string | null
+    favoriteDrink: string | null
+    dietaryNotes: string | null
+    interests: string | null
+    published: boolean
+  } | null
+}
+
 const emptyProfile: ProfileForm = {
   displayName: '',
   pronunciation: '',
@@ -35,12 +51,45 @@ const emptyProfile: ProfileForm = {
   published: false,
 }
 
+function CharacterCount({
+  value,
+  field,
+}: {
+  value: string
+  field: ProfileFieldName
+}) {
+  const limit = PROFILE_FIELD_LIMITS[field]
+  // The worker trims before measuring, so count the trimmed length or the
+  // counter and the server can disagree at the boundary.
+  const used = value.trim().length
+  const remaining = limit - used
+
+  const state =
+    remaining < 0
+      ? 'is-over'
+      : remaining <= CHARACTERS_REMAINING_WARNING
+        ? 'is-near'
+        : ''
+
+  return (
+    <p
+      className={`char-count ${state}`.trimEnd()}
+      aria-live={remaining <= CHARACTERS_REMAINING_WARNING ? 'polite' : 'off'}
+    >
+      {remaining < 0
+        ? `${-remaining} over the ${limit} character limit`
+        : `${used} / ${limit}`}
+    </p>
+  )
+}
+
 function App() {
   const [session, setSession] = useState<SessionResponse | null>(null)
   const [profile, setProfile] = useState<ProfileForm>(emptyProfile)
   const [isSaving, setIsSaving] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
+  const [didProfileLoadFail, setDidProfileLoadFail] = useState(false)
 
   useEffect(() => {
     async function loadSession() {
@@ -52,14 +101,47 @@ function App() {
         }
 
         const data = (await response.json()) as SessionResponse
-        setSession(data)
 
-        if (data.authenticated) {
-          setProfile((current) => ({
-            ...current,
-            displayName: data.user.globalName ?? data.user.username,
-          }))
+        if (!data.authenticated) {
+          setSession(data)
+          return
         }
+
+        const discordName = data.user.globalName ?? data.user.username
+
+        try {
+          const profileResponse = await fetch('/api/profile')
+
+          if (!profileResponse.ok) {
+            throw new Error('Unable to load your saved profile.')
+          }
+
+          const { profile: saved } =
+            (await profileResponse.json()) as ProfileResponse
+
+          setProfile(
+            saved
+              ? {
+                  displayName: saved.displayName,
+                  pronunciation: saved.pronunciation ?? '',
+                  favoriteDrink: saved.favoriteDrink ?? '',
+                  dietaryNotes: saved.dietaryNotes ?? '',
+                  interests: saved.interests ?? '',
+                  published: saved.published,
+                }
+              : { ...emptyProfile, displayName: discordName },
+          )
+        } catch {
+          // Saving now would overwrite answers we could not read back, so the
+          // form stays visible but locked until a reload succeeds.
+          setDidProfileLoadFail(true)
+          setError(
+            'Unable to load your saved profile. Reload the page before editing.',
+          )
+          setProfile({ ...emptyProfile, displayName: discordName })
+        }
+
+        setSession(data)
       } catch {
         setError('Unable to connect to the application.')
         setSession({ authenticated: false })
@@ -165,6 +247,12 @@ function App() {
 
   const userName = session.user.globalName ?? session.user.username
 
+  const hasOverLimitField = (
+    Object.keys(PROFILE_FIELD_LIMITS) as ProfileFieldName[]
+  ).some(
+    (field) => profile[field].trim().length > PROFILE_FIELD_LIMITS[field],
+  )
+
   return (
     <main className="app-shell">
       <section className="card form-card">
@@ -194,9 +282,12 @@ function App() {
               }
               required
             />
-            <p className="field-hint">
-              The name classmates should use when addressing you.
-            </p>
+            <div className="field-footer">
+              <p className="field-hint">
+                The name classmates should use when addressing you.
+              </p>
+              <CharacterCount value={profile.displayName} field="displayName" />
+            </div>
           </div>
 
           <div className="field">
@@ -210,6 +301,12 @@ function App() {
               }
               placeholder="For example: suh-LEST"
             />
+            <div className="field-footer">
+              <CharacterCount
+                value={profile.pronunciation}
+                field="pronunciation"
+              />
+            </div>
           </div>
 
           <div className="field">
@@ -223,6 +320,12 @@ function App() {
               }
               placeholder="For example: oat milk latte"
             />
+            <div className="field-footer">
+              <CharacterCount
+                value={profile.favoriteDrink}
+                field="favoriteDrink"
+              />
+            </div>
           </div>
 
           <div className="field">
@@ -237,7 +340,10 @@ function App() {
               rows={3}
               placeholder="Share only what you want classmates to know."
             />
-            <p className="field-hint">This field is optional.</p>
+            <div className="field-footer">
+              <p className="field-hint">This field is optional.</p>
+              <CharacterCount value={profile.dietaryNotes} field="dietaryNotes" />
+            </div>
           </div>
 
           <div className="field">
@@ -252,6 +358,9 @@ function App() {
               rows={4}
               placeholder="Adaptive reuse, model making, public space…"
             />
+            <div className="field-footer">
+              <CharacterCount value={profile.interests} field="interests" />
+            </div>
           </div>
 
           <label className="checkbox-field">
@@ -277,10 +386,16 @@ function App() {
             </p>
           )}
 
+          {hasOverLimitField && (
+            <p className="error-message" role="alert">
+              Some answers are over the character limit. Shorten them to save.
+            </p>
+          )}
+
           <button
             className="primary-button"
             type="submit"
-            disabled={isSaving}
+            disabled={isSaving || hasOverLimitField || didProfileLoadFail}
           >
             {isSaving ? 'Saving…' : 'Save profile'}
           </button>

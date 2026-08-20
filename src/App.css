@@ -123,6 +123,35 @@ textarea {
   line-height: 1.5;
 }
 
+.field-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.field-footer .field-hint {
+  flex: 1;
+}
+
+.char-count {
+  margin: 0 0 0 auto;
+  color: #70757f;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.char-count.is-near {
+  color: #8a5a00;
+  font-weight: 650;
+}
+
+.char-count.is-over {
+  color: #b3261e;
+  font-weight: 650;
+}
+
 .checkbox-field {
   display: flex;
   align-items: flex-start;
