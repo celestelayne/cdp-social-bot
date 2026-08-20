@@ -16,6 +16,67 @@ export default {
       });
     }
 
+    if (url.pathname === "/api/session" && request.method === "GET") {
+      const cookieHeader = request.headers.get("Cookie") ?? "";
+      const sessionId = cookieHeader
+        .split(";")
+        .map((part) => part.trim())
+        .find((part) => part.startsWith("session="))
+        ?.slice("session=".length);
+
+      if (!sessionId) {
+        return Response.json({ authenticated: false });
+      }
+
+      const session = await env.cdp_social_bot_db
+        .prepare(
+          "SELECT discord_user_id, username, global_name, avatar, expires_at FROM sessions WHERE session_id = ?",
+        )
+        .bind(sessionId)
+        .first<{
+          discord_user_id: string;
+          username: string;
+          global_name: string | null;
+          avatar: string | null;
+          expires_at: string;
+        }>();
+
+      if (!session) {
+        return Response.json({ authenticated: false });
+      }
+
+      if (new Date(session.expires_at).getTime() < Date.now()) {
+        await env.cdp_social_bot_db
+          .prepare("DELETE FROM sessions WHERE session_id = ?")
+          .bind(sessionId)
+          .run();
+
+        const clearedCookieParts = [
+          "session=",
+          "HttpOnly",
+          "SameSite=Lax",
+          "Path=/",
+          "Max-Age=0",
+        ];
+        if (url.protocol === "https:") clearedCookieParts.push("Secure");
+
+        return Response.json(
+          { authenticated: false },
+          { headers: { "Set-Cookie": clearedCookieParts.join("; ") } },
+        );
+      }
+
+      return Response.json({
+        authenticated: true,
+        user: {
+          id: session.discord_user_id,
+          username: session.username,
+          globalName: session.global_name,
+          avatar: session.avatar,
+        },
+      });
+    }
+
     if (url.pathname === "/auth/discord" && request.method === "GET") {
       const stateBytes = new Uint8Array(32);
       crypto.getRandomValues(stateBytes);
