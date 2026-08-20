@@ -35,6 +35,52 @@ function buildSessionCookie(
   return parts.join("; ");
 }
 
+type SessionRow = {
+  discord_user_id: string;
+  username: string;
+  global_name: string | null;
+  avatar: string | null;
+  expires_at: string;
+};
+
+type SessionLookup =
+  | { status: "none" }
+  | { status: "expired" }
+  | { status: "valid"; session: SessionRow };
+
+async function loadSession(
+  request: Request,
+  env: Env,
+): Promise<SessionLookup> {
+  const sessionId = readSessionId(request);
+
+  if (!sessionId) {
+    return { status: "none" };
+  }
+
+  const session = await env.cdp_social_bot_db
+    .prepare(
+      "SELECT discord_user_id, username, global_name, avatar, expires_at FROM sessions WHERE session_id = ?",
+    )
+    .bind(sessionId)
+    .first<SessionRow>();
+
+  if (!session) {
+    return { status: "none" };
+  }
+
+  if (new Date(session.expires_at).getTime() < Date.now()) {
+    await env.cdp_social_bot_db
+      .prepare("DELETE FROM sessions WHERE session_id = ?")
+      .bind(sessionId)
+      .run();
+
+    return { status: "expired" };
+  }
+
+  return { status: "valid", session };
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -47,48 +93,63 @@ export default {
     }
 
     if (url.pathname === "/api/session" && request.method === "GET") {
-      const sessionId = readSessionId(request);
+      const lookup = await loadSession(request, env);
 
-      if (!sessionId) {
-        return Response.json({ authenticated: false });
-      }
-
-      const session = await env.cdp_social_bot_db
-        .prepare(
-          "SELECT discord_user_id, username, global_name, avatar, expires_at FROM sessions WHERE session_id = ?",
-        )
-        .bind(sessionId)
-        .first<{
-          discord_user_id: string;
-          username: string;
-          global_name: string | null;
-          avatar: string | null;
-          expires_at: string;
-        }>();
-
-      if (!session) {
-        return Response.json({ authenticated: false });
-      }
-
-      if (new Date(session.expires_at).getTime() < Date.now()) {
-        await env.cdp_social_bot_db
-          .prepare("DELETE FROM sessions WHERE session_id = ?")
-          .bind(sessionId)
-          .run();
-
+      if (lookup.status === "expired") {
         return Response.json(
           { authenticated: false },
           { headers: { "Set-Cookie": buildSessionCookie("", 0, url) } },
         );
       }
 
+      if (lookup.status === "none") {
+        return Response.json({ authenticated: false });
+      }
+
       return Response.json({
         authenticated: true,
         user: {
-          id: session.discord_user_id,
-          username: session.username,
-          globalName: session.global_name,
-          avatar: session.avatar,
+          id: lookup.session.discord_user_id,
+          username: lookup.session.username,
+          globalName: lookup.session.global_name,
+          avatar: lookup.session.avatar,
+        },
+      });
+    }
+
+    if (url.pathname === "/api/profile" && request.method === "GET") {
+      const lookup = await loadSession(request, env);
+
+      if (lookup.status !== "valid") {
+        return Response.json({ error: "Unauthorized" }, { status: 401 });
+      }
+
+      const profile = await env.cdp_social_bot_db
+        .prepare(
+          "SELECT display_name, pronunciation, favorite_drink, dietary_notes, interests, published FROM profiles WHERE discord_user_id = ?",
+        )
+        .bind(lookup.session.discord_user_id)
+        .first<{
+          display_name: string;
+          pronunciation: string | null;
+          favorite_drink: string | null;
+          dietary_notes: string | null;
+          interests: string | null;
+          published: number;
+        }>();
+
+      if (!profile) {
+        return Response.json({ profile: null });
+      }
+
+      return Response.json({
+        profile: {
+          displayName: profile.display_name,
+          pronunciation: profile.pronunciation,
+          favoriteDrink: profile.favorite_drink,
+          dietaryNotes: profile.dietary_notes,
+          interests: profile.interests,
+          published: profile.published !== 0,
         },
       });
     }
