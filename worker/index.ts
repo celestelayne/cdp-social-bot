@@ -228,12 +228,15 @@ type Interaction = {
  * ping anyone — a student who types "@everyone" into a field would otherwise
  * notify the whole server every time someone ran /meet.
  */
-function discordMessage(content: string): Response {
+function discordMessage(content: string, ephemeral = false): Response {
   return Response.json({
     type: 4,
     data: {
       content,
       allowed_mentions: { parse: [] },
+      // 64 is Discord's EPHEMERAL flag: only the person who ran the command
+      // sees the reply.
+      ...(ephemeral ? { flags: 64 } : {}),
     },
   });
 }
@@ -255,6 +258,33 @@ function formatProfile(profile: PublishedProfileRow): string {
   }
 
   return lines.join("\n");
+}
+
+type ProfileLookup =
+  | { status: "missing" }
+  | { status: "unpublished" }
+  | { status: "published"; profile: PublishedProfileRow };
+
+async function loadPublishedProfile(
+  env: Env,
+  studentId: string,
+): Promise<ProfileLookup> {
+  const profile = await env.cdp_social_bot_db
+    .prepare(
+      "SELECT display_name, pronunciation, favorite_drink, dietary_notes, interests, published FROM profiles WHERE discord_user_id = ?",
+    )
+    .bind(studentId)
+    .first<PublishedProfileRow>();
+
+  if (!profile) {
+    return { status: "missing" };
+  }
+
+  if (profile.published !== 1) {
+    return { status: "unpublished" };
+  }
+
+  return { status: "published", profile };
 }
 
 export default {
@@ -414,8 +444,14 @@ export default {
         return Response.json({ type: 1 });
       }
 
-      if (interaction.data?.name === "meet") {
-        const studentOption = interaction.data.options?.find(
+      const commandName = interaction.data?.name;
+
+      if (commandName === "meet" || commandName === "pronounce") {
+        // Looking up a pronunciation should be discreet, so every reply to
+        // /pronounce is visible only to whoever ran it.
+        const ephemeral = commandName === "pronounce";
+
+        const studentOption = interaction.data?.options?.find(
           (option) => option.name === "student",
         );
 
@@ -423,25 +459,40 @@ export default {
           typeof studentOption?.value === "string" ? studentOption.value : null;
 
         if (!studentId) {
-          return discordMessage("Choose a classmate to look up.");
+          return discordMessage("Choose a classmate to look up.", ephemeral);
         }
 
-        const profile = await env.cdp_social_bot_db
-          .prepare(
-            "SELECT display_name, pronunciation, favorite_drink, dietary_notes, interests, published FROM profiles WHERE discord_user_id = ?",
-          )
-          .bind(studentId)
-          .first<PublishedProfileRow>();
+        const lookup = await loadPublishedProfile(env, studentId);
 
-        if (!profile) {
-          return discordMessage("This student has not created a profile yet.");
+        if (lookup.status === "missing") {
+          return discordMessage(
+            "This student has not created a profile yet.",
+            ephemeral,
+          );
         }
 
-        if (profile.published !== 1) {
-          return discordMessage("This student's profile is not published.");
+        if (lookup.status === "unpublished") {
+          return discordMessage(
+            "This student's profile is not published.",
+            ephemeral,
+          );
         }
 
-        return discordMessage(formatProfile(profile));
+        if (commandName === "pronounce") {
+          if (!lookup.profile.pronunciation) {
+            return discordMessage(
+              "This student has not added a pronunciation.",
+              ephemeral,
+            );
+          }
+
+          return discordMessage(
+            `**${lookup.profile.display_name}** — ${lookup.profile.pronunciation}`,
+            ephemeral,
+          );
+        }
+
+        return discordMessage(formatProfile(lookup.profile));
       }
 
       return discordMessage("Discord interactions are connected.");

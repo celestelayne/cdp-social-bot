@@ -1,5 +1,5 @@
 /**
- * Registers the /meet slash command for a single guild.
+ * Registers this bot's slash commands for a single guild.
  *
  * Guild commands appear in Discord immediately, where global commands can take
  * up to an hour to propagate — and a course bot should stay scoped to its own
@@ -31,6 +31,22 @@ const MEET_COMMAND = {
     },
   ],
 };
+
+const PRONOUNCE_COMMAND = {
+  name: "pronounce",
+  description: "Show how to pronounce a classmate's name",
+  type: 1,
+  options: [
+    {
+      name: "student",
+      description: "The classmate whose name you want to pronounce",
+      type: 6,
+      required: true,
+    },
+  ],
+};
+
+const COMMANDS = [MEET_COMMAND, PRONOUNCE_COMMAND];
 
 function readDevVars(): Record<string, string> {
   try {
@@ -94,23 +110,27 @@ const config = resolveConfig();
 
 const endpoint = `https://discord.com/api/v10/applications/${config.DISCORD_APPLICATION_ID}/guilds/${config.DISCORD_GUILD_ID}/commands`;
 
-const response = await fetch(endpoint, {
-  method: "POST",
-  headers: {
-    Authorization: `Bot ${config.DISCORD_BOT_TOKEN}`,
-    "Content-Type": "application/json",
-  },
-  body: JSON.stringify(MEET_COMMAND),
-});
+for (const command of COMMANDS) {
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bot ${config.DISCORD_BOT_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(command),
+  });
 
-if (!response.ok) {
-  console.error(`Discord returned ${response.status} ${response.statusText}`);
-  console.error(await response.text());
-  process.exit(1);
+  if (!response.ok) {
+    console.error(
+      `Failed to register /${command.name}: ${response.status} ${response.statusText}`,
+    );
+    console.error(await response.text());
+    process.exit(1);
+  }
+
+  const registered = (await response.json()) as { id: string; name: string };
+
+  console.log(
+    `Registered /${registered.name} (id ${registered.id}) for guild ${config.DISCORD_GUILD_ID}`,
+  );
 }
-
-const registered = (await response.json()) as { id: string; name: string };
-
-console.log(
-  `Registered /${registered.name} (id ${registered.id}) for guild ${config.DISCORD_GUILD_ID}`,
-);
